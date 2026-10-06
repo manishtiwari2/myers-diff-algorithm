@@ -15,10 +15,10 @@ import java.util.Arrays;
  */
 public class Line {
 
-    private final byte[] data;
-    private final int start;
-    private final int end;
-    private final int hash;    // computed once, because HashMap asks for it often
+    private final byte[] data;   // the whole file (shared by all its lines)
+    private final int start;     // first byte of this line
+    private final int end;       // one past the last byte of this line
+    private final int hash;      // computed once, because HashMap asks for it often
 
     public Line(byte[] data, int start, int end) {
         this.data = data;
@@ -41,17 +41,19 @@ public class Line {
         return new String(data, start, end - start, StandardCharsets.UTF_8);
     }
 
-    /** A copy of the line's bytes (used by the tests). */
+    /** A copy of the line's bytes (only used by my own test code, not by the program). */
     public byte[] toBytes() {
         return Arrays.copyOfRange(data, start, end);
     }
 
+    /** Two lines are equal if they have exactly the same bytes. */
     @Override
     public boolean equals(Object other) {
         if (!(other instanceof Line)) {
             return false;
         }
         Line that = (Line) other;
+        // compare this line's bytes with the other line's bytes
         return Arrays.equals(this.data, this.start, this.end, that.data, that.start, that.end);
     }
 

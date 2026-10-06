@@ -33,10 +33,10 @@
  */
 public class Myers {
 
-    private final int[] a;
-    private final int[] b;
-    private final boolean[] deleted;
-    private final boolean[] inserted;
+    private final int[] a;              // first sequence (old file)
+    private final int[] b;              // second sequence (new file)
+    private final boolean[] deleted;    // answer: deleted[i] = true means a[i] is removed
+    private final boolean[] inserted;   // answer: inserted[j] = true means b[j] is added
 
     // The two V arrays. Index = k + offset, because k can be negative.
     // They are created once and reused by every recursive call.
@@ -47,7 +47,7 @@ public class Myers {
     /** Fill deleted[] and inserted[] (both must start all false). */
     public static void diff(int[] a, int[] b, boolean[] deleted, boolean[] inserted) {
         Myers myers = new Myers(a, b, deleted, inserted);
-        myers.compare(0, a.length, 0, b.length);
+        myers.compare(0, a.length, 0, b.length);   // diff the whole of a against the whole of b
     }
 
     private Myers(int[] a, int[] b, boolean[] deleted, boolean[] inserted) {
@@ -55,9 +55,9 @@ public class Myers {
         this.b = b;
         this.deleted = deleted;
         this.inserted = inserted;
-        int max = a.length + b.length;
-        this.offset = max + 1;
-        this.forward = new int[2 * max + 3];
+        int max = a.length + b.length;     // the most edits we could ever need
+        this.offset = max + 1;             // shifts k (which can be negative) to a valid index
+        this.forward = new int[2 * max + 3];   // big enough for every k from -max-1 to max+1
         this.backward = new int[2 * max + 3];
     }
 
@@ -66,11 +66,13 @@ public class Myers {
      */
     private void compare(int aLo, int aHi, int bLo, int bHi) {
         // 1. Equal items at the start are always kept. Skip them.
+        //    This step is also important for the recursion: without it, some inputs
+        //    (like "ab" vs "a") would give an empty snake and repeat forever.
         while (aLo < aHi && bLo < bHi && a[aLo] == b[bLo]) {
             aLo++;
             bLo++;
         }
-        // 2. Equal items at the end are always kept. Skip them.
+        // 2. Equal items at the end are always kept. Skip them (this makes it faster).
         while (aLo < aHi && bLo < bHi && a[aHi - 1] == b[bHi - 1]) {
             aHi--;
             bHi--;
@@ -78,12 +80,14 @@ public class Myers {
 
         // 3. If one side is empty, everything on the other side changed.
         if (aLo == aHi) {
+            // nothing left in a, so every remaining item of b is an insert
             for (int j = bLo; j < bHi; j++) {
                 inserted[j] = true;
             }
             return;
         }
         if (bLo == bHi) {
+            // nothing left in b, so every remaining item of a is a delete
             for (int i = aLo; i < aHi; i++) {
                 deleted[i] = true;
             }
@@ -94,8 +98,8 @@ public class Myers {
         //    The snake itself is all equal items, so they are kept (flags stay false).
         int[] snake = middleSnake(aLo, aHi, bLo, bHi);
         int xStart = snake[0], yStart = snake[1], xEnd = snake[2], yEnd = snake[3];
-        compare(aLo, xStart, bLo, yStart);
-        compare(xEnd, aHi, yEnd, bHi);
+        compare(aLo, xStart, bLo, yStart);   // the part before the snake
+        compare(xEnd, aHi, yEnd, bHi);       // the part after the snake
     }
 
     /**
@@ -104,30 +108,36 @@ public class Myers {
      * Returns {xStart, yStart, xEnd, yEnd} of the middle snake (absolute positions).
      */
     private int[] middleSnake(int aLo, int aHi, int bLo, int bHi) {
-        int n = aHi - aLo;
-        int m = bHi - bLo;
+        int n = aHi - aLo;                  // length of the a part
+        int m = bHi - bLo;                  // length of the b part
         int delta = n - m;                  // the diagonal where (n,m) lies
+        // The total number of edits D is always odd when delta is odd, and even when
+        // delta is even. So we know which search will meet the other one first.
         boolean deltaIsOdd = (delta % 2 != 0);
         int maxD = (n + m + 1) / 2;         // each search needs at most half the edits
 
         // Fake starting values so that round d = 0 starts exactly at the corner.
+        // We must set them every time, because the arrays still hold old values
+        // from the previous call.
         forward[offset + 1] = 0;
         backward[offset + 1] = 0;
 
-        for (int d = 0; d <= maxD; d++) {
+        for (int d = 0; d <= maxD; d++) {   // d = number of edits used so far
 
             // ---------- Forward search: from (0,0) towards (n,m) ----------
+            // After d edits we can only be on every second diagonal: -d, -d+2, ..., d.
             for (int k = -d; k <= d; k += 2) {
                 // Come from diagonal k+1 (move down) or k-1 (move right)?
                 // Take the one that got further.
+                // (On a tie we move right, because right reaches one step further.)
                 int x;
                 if (k == -d || (k != d && forward[offset + k - 1] < forward[offset + k + 1])) {
                     x = forward[offset + k + 1];          // move down
                 } else {
                     x = forward[offset + k - 1] + 1;      // move right
                 }
-                int y = x - k;
-                int startX = x;
+                int y = x - k;                            // because k = x - y
+                int startX = x;                           // remember where the snake begins
                 int startY = y;
 
                 // Follow the snake: walk diagonally while the items are equal.
@@ -135,14 +145,18 @@ public class Myers {
                     x++;
                     y++;
                 }
-                forward[offset + k] = x;
+                forward[offset + k] = x;                  // save the furthest x on diagonal k
 
                 // Overlap check (only when delta is odd).
                 // Forward diagonal k is the same line as backward diagonal (delta - k).
                 int backK = delta - k;
+                // The backward search has only finished d-1 rounds, so only its
+                // diagonals -(d-1) .. d-1 have real values.
                 if (deltaIsOdd && backK >= -(d - 1) && backK <= d - 1) {
                     // backward[] stores how far the backward search got, counted from the end.
+                    // So its real x is n - backward[...]. If our x has reached it, they meet.
                     if (x + backward[offset + backK] >= n) {
+                        // Found it: the snake we just followed is the middle snake.
                         return new int[] {aLo + startX, bLo + startY, aLo + x, bLo + y};
                     }
                 }
@@ -150,24 +164,27 @@ public class Myers {
 
             // ---------- Backward search: from (n,m) towards (0,0) ----------
             // Same code, but we read a and b from the end (a[aHi-1-x], b[bHi-1-y]).
+            // Here x and y mean "how many items from the end".
             for (int k = -d; k <= d; k += 2) {
                 int x;
                 if (k == -d || (k != d && backward[offset + k - 1] < backward[offset + k + 1])) {
-                    x = backward[offset + k + 1];
+                    x = backward[offset + k + 1];         // move up (towards the start)
                 } else {
-                    x = backward[offset + k - 1] + 1;
+                    x = backward[offset + k - 1] + 1;     // move left (towards the start)
                 }
                 int y = x - k;
-                int startX = x;
+                int startX = x;                           // remember where the snake begins
                 int startY = y;
 
+                // Follow the snake backwards while the items are equal.
                 while (x < n && y < m && a[aHi - 1 - x] == b[bHi - 1 - y]) {
                     x++;
                     y++;
                 }
-                backward[offset + k] = x;
+                backward[offset + k] = x;                 // save how far we got on diagonal k
 
                 // Overlap check (only when delta is even).
+                // The forward search has already finished round d, so -d .. d are valid.
                 int forwardK = delta - k;
                 if (!deltaIsOdd && forwardK >= -d && forwardK <= d) {
                     if (forward[offset + forwardK] + x >= n) {

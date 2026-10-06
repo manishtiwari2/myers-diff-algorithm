@@ -30,10 +30,11 @@ public class Main {
         try {
             exitCode = run(args, System.out, System.err);
         } catch (IOException e) {
+            // only happens if printing the output fails
             System.err.println("error while writing output: " + e.getMessage());
             exitCode = 1;
         }
-        System.exit(exitCode);
+        System.exit(exitCode);   // 0 = ok, 2 = bad arguments or a file could not be read
     }
 
     /**
@@ -41,12 +42,13 @@ public class Main {
      * (It is separate from main so the tests can call it directly.)
      */
     static int run(String[] args, OutputStream stdout, PrintStream stderr) throws IOException {
+        // We need exactly: a command ("lines" or "highlight") and two file paths.
         boolean known = args.length == 3 && (args[0].equals("lines") || args[0].equals("highlight"));
         if (!known) {
             stderr.println("usage: Main lines|highlight A_PATH B_PATH");
             return 2;
         }
-        String command = args[0];
+        String command = args[0];   // "lines" or "highlight"
 
         // Read both files BEFORE printing anything, so a bad file means empty stdout.
         List<Line> linesA;
@@ -55,21 +57,25 @@ public class Main {
             linesA = readLines(args[1]);
             linesB = readLines(args[2]);
         } catch (IOException | InvalidPathException e) {
+            // missing file, a folder instead of a file, no permission, or a bad path
             stderr.println("error: cannot read file: " + e.getMessage());
             return 2;
         }
 
+        // deleted[i] = true  -> line i of A is printed with '-'
+        // inserted[j] = true -> line j of B is printed with '+'
         boolean[] deleted = new boolean[linesA.size()];
         boolean[] inserted = new boolean[linesB.size()];
         diffLines(linesA, linesB, deleted, inserted);
 
+        // A buffer (64 KB) so we do not write to the screen one tiny piece at a time.
         BufferedOutputStream out = new BufferedOutputStream(stdout, 1 << 16);
         if (command.equals("lines")) {
             printLines(linesA, linesB, deleted, inserted, out);
         } else {
             printHighlight(linesA, linesB, deleted, inserted, out);
         }
-        out.flush();
+        out.flush();   // send whatever is still in the buffer
         return 0;
     }
 
@@ -84,13 +90,13 @@ public class Main {
      * Examples:  ""  -> []     "\n" -> [""]     "a" or "a\n" -> ["a"]
      */
     static List<Line> readLines(String path) throws IOException {
-        byte[] data = Files.readAllBytes(Path.of(path));
+        byte[] data = Files.readAllBytes(Path.of(path));   // the whole file as raw bytes
         List<Line> lines = new ArrayList<>();
         int start = 0;                        // where the current line starts
         for (int i = 0; i < data.length; i++) {
             if (data[i] == '\n') {
-                lines.add(new Line(data, start, i));
-                start = i + 1;
+                lines.add(new Line(data, start, i));   // the line is data[start..i), without '\n'
+                start = i + 1;                         // the next line starts after the '\n'
             }
         }
         if (start < data.length) {            // last piece has no '\n' after it, but it is not empty
@@ -124,6 +130,7 @@ public class Main {
         int[] idsB = toIds(linesB, ids);
 
         // Step 2: which ids appear in A, and which in B?
+        // inA[id] = true means this line appears somewhere in A (same idea for inB).
         boolean[] inA = new boolean[ids.size()];
         boolean[] inB = new boolean[ids.size()];
         for (int id : idsA) {
@@ -153,6 +160,7 @@ public class Main {
             }
         }
 
+        // a and b = the ids of only the lines that appear in both files
         int[] a = new int[countA];
         int[] b = new int[countB];
         for (int t = 0; t < countA; t++) {
@@ -162,7 +170,8 @@ public class Main {
             b[t] = idsB[positionB[t]];
         }
 
-        // Step 3
+        // Step 3: run Myers on the shorter lists, then copy each flag back
+        // to the line's real position in the file (using positionA / positionB).
         boolean[] smallDeleted = new boolean[countA];
         boolean[] smallInserted = new boolean[countB];
         Myers.diff(a, b, smallDeleted, smallInserted);
@@ -178,6 +187,10 @@ public class Main {
         }
     }
 
+    /**
+     * Turn every line into a number. Equal lines get the same number.
+     * Example: lines [x, y, x] -> ids [0, 1, 0]
+     */
     private static int[] toIds(List<Line> lines, Map<Line, Integer> ids) {
         int[] result = new int[lines.size()];
         for (int i = 0; i < lines.size(); i++) {
@@ -200,17 +213,20 @@ public class Main {
      */
     static void printLines(List<Line> linesA, List<Line> linesB,
                            boolean[] deleted, boolean[] inserted, OutputStream out) throws IOException {
-        int i = 0;
-        int j = 0;
+        int i = 0;   // current line in A
+        int j = 0;   // current line in B
         while (i < linesA.size() || j < linesB.size()) {
+            // first: all deleted lines in a row
             while (i < linesA.size() && deleted[i]) {
                 writeLine(out, '-', linesA.get(i));
                 i++;
             }
+            // then: all inserted lines in a row
             while (j < linesB.size() && inserted[j]) {
                 writeLine(out, '+', linesB.get(j));
                 j++;
             }
+            // then: one kept line (A and B move forward together)
             if (i < linesA.size() && j < linesB.size()) {
                 writeLine(out, ' ', linesA.get(i));   // kept line: same in A and B
                 i++;
@@ -252,17 +268,21 @@ public class Main {
                 j++;
             }
 
+            // print all '-' lines of the block
             for (Line line : blockDeleted) {
                 writeLine(out, '-', line);
             }
+            // print each '+' line; the p-th '+' line is paired with the p-th '-' line
             for (int p = 0; p < blockInserted.size(); p++) {
                 writeLine(out, '+', blockInserted.get(p));
                 if (p < blockDeleted.size()) {                 // this '+' line has a partner
                     String ranges = rangeLine(blockDeleted.get(p), blockInserted.get(p));
-                    out.write(ranges.getBytes(StandardCharsets.US_ASCII));
+                    out.write(ranges.getBytes(StandardCharsets.US_ASCII));   // the "?" line is plain ASCII
                 }
+                // a '+' line without a partner gets no "?" line
             }
 
+            // then one kept line, same as in printLines
             if (i < linesA.size() && j < linesB.size()) {
                 writeLine(out, ' ', linesA.get(i));
                 i++;
@@ -281,9 +301,9 @@ public class Main {
         // codePoints() so that an emoji counts as one character (not two Java chars)
         int[] a = oldLine.toText().codePoints().toArray();
         int[] b = newLine.toText().codePoints().toArray();
-        boolean[] deletedChars = new boolean[a.length];
-        boolean[] insertedChars = new boolean[b.length];
-        Myers.diff(a, b, deletedChars, insertedChars);
+        boolean[] deletedChars = new boolean[a.length];    // true = this character was removed
+        boolean[] insertedChars = new boolean[b.length];   // true = this character was added
+        Myers.diff(a, b, deletedChars, insertedChars);     // the same algorithm as for lines
         return "? " + ranges(deletedChars) + " | " + ranges(insertedChars) + "\n";
     }
 
@@ -297,20 +317,20 @@ public class Main {
         StringBuilder sb = new StringBuilder();
         int i = 0;
         while (i < changed.length) {
-            if (!changed[i]) {
+            if (!changed[i]) {          // not changed: skip it
                 i++;
                 continue;
             }
-            int start = i;
+            int start = i;              // a run of changed characters starts here
             while (i < changed.length && changed[i]) {
-                i++;
+                i++;                    // go to the end of the run
             }
             if (sb.length() > 0) {
-                sb.append(',');
+                sb.append(',');         // comma between ranges
             }
-            sb.append(start).append('-').append(i);
+            sb.append(start).append('-').append(i);   // i is the first position after the run
         }
-        if (sb.length() == 0) {
+        if (sb.length() == 0) {         // nothing changed on this side
             return ".";
         }
         return sb.toString();
