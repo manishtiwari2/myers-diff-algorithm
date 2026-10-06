@@ -16,15 +16,11 @@ import java.util.Map;
  *
  *   java Main lines     A B    Part A: minimal line diff of file A to file B
  *   java Main highlight A B    Part B: the same diff, plus changed-character ranges
- *
- * Output lines:
- *   " line"   keep   (the line is in both files)
- *   "-line"   delete (the line is only in A)
- *   "+line"   insert (the line is only in B)
- *   "? old | new"   (highlight only) changed character ranges of a line pair
  */
 public class Main {
 
+    // main only calls run(...) and exits with the code that run returns:
+    // 0 = ok, 2 = bad arguments or a file could not be read.
     public static void main(String[] args) {
         int exitCode;
         try {
@@ -34,13 +30,14 @@ public class Main {
             System.err.println("error while writing output: " + e.getMessage());
             exitCode = 1;
         }
-        System.exit(exitCode);   // 0 = ok, 2 = bad arguments or a file could not be read
+        System.exit(exitCode);
     }
 
-    /**
-     * Does all the work and returns the exit code.
-     * (It is separate from main so the tests can call it directly.)
-     */
+    // run does all the work and returns the exit code instead of calling System.exit,
+    // so it can also be called from my tests, which check the exact output and the
+    // exit code.
+    // Both files are read before anything is printed, because the rules say: if a file
+    // cannot be read, print NOTHING on stdout, a message on stderr, and exit with code 2.
     static int run(String[] args, OutputStream stdout, PrintStream stderr) throws IOException {
         // We need exactly: a command ("lines" or "highlight") and two file paths.
         boolean known = args.length == 3 && (args[0].equals("lines") || args[0].equals("highlight"));
@@ -50,7 +47,6 @@ public class Main {
         }
         String command = args[0];   // "lines" or "highlight"
 
-        // Read both files BEFORE printing anything, so a bad file means empty stdout.
         List<Line> linesA;
         List<Line> linesB;
         try {
@@ -68,7 +64,8 @@ public class Main {
         boolean[] inserted = new boolean[linesB.size()];
         diffLines(linesA, linesB, deleted, inserted);
 
-        // A buffer (64 KB) so we do not write to the screen one tiny piece at a time.
+        // A 64 KB buffer, so we do not write to the screen one tiny piece at a time.
+        // This matters for files with 500,000 lines.
         BufferedOutputStream out = new BufferedOutputStream(stdout, 1 << 16);
         if (command.equals("lines")) {
             printLines(linesA, linesB, deleted, inserted, out);
@@ -83,12 +80,15 @@ public class Main {
     // Reading a file into lines (problem statement, section 1)
     // =====================================================================
 
-    /**
-     * Read the file as raw bytes and split it on the newline byte '\n'.
-     * - A final '\n' does not create an extra empty line (the last empty piece is dropped).
-     * - '\r' is kept as part of the line.
-     * Examples:  ""  -> []     "\n" -> [""]     "a" or "a\n" -> ["a"]
-     */
+    // readLines reads the file as raw bytes and splits it on the newline byte '\n'.
+    //      ""           -> []
+    //      "\n"         -> [""]
+    //      "a" or "a\n" -> ["a"]        (a final '\n' does not make an extra empty line)
+    //      "a\n\nb"     -> ["a", "", "b"]
+    //      "a\r\nb\r\n" -> ["a\r", "b\r"] ('\r' is kept as part of the line)
+    // We keep raw bytes, because reading text would change "\r\n" and damage bytes that
+    // are not valid UTF-8 (some test files have them). Lines are compared and printed
+    // exactly as they are.
     static List<Line> readLines(String path) throws IOException {
         byte[] data = Files.readAllBytes(Path.of(path));   // the whole file as raw bytes
         List<Line> lines = new ArrayList<>();
@@ -99,7 +99,9 @@ public class Main {
                 start = i + 1;                         // the next line starts after the '\n'
             }
         }
-        if (start < data.length) {            // last piece has no '\n' after it, but it is not empty
+        // The last piece (after the last '\n') is only a line if it is not empty.
+        // So "a\n" gives one line, not two.
+        if (start < data.length) {
             lines.add(new Line(data, start, data.length));
         }
         return lines;
@@ -109,27 +111,26 @@ public class Main {
     // Part A: line diff
     // =====================================================================
 
-    /**
-     * Fill deleted[] / inserted[] for the lines.
-     *
-     * Step 1: give every distinct line a number (id), so Myers compares ints.
-     *         Line.equals compares the exact bytes, so this also works for bytes
-     *         that are not valid UTF-8.
-     *
-     * Step 2: a line that never appears in the other file can never be kept, so it
-     *         is deleted/inserted for sure. We mark it right away and leave it out of
-     *         the Myers search. This does not change the answer (it is still minimal)
-     *         but makes very different files much faster.
-     *
-     * Step 3: run Myers on the remaining lines and copy the flags back.
-     */
+    // diffLines fills deleted[] / inserted[] for the lines, in three steps:
+    //    1. give every distinct line a number (id),
+    //    2. mark lines that appear in only one file,
+    //    3. run Myers on the other lines and copy the flags back.
     static void diffLines(List<Line> linesA, List<Line> linesB, boolean[] deleted, boolean[] inserted) {
-        // Step 1
+
+        // Step 1. Lines get numbers because Myers compares items again and again, and
+        // comparing two ints is much faster than comparing two lines byte by byte.
+        // Line.equals compares exact bytes, so equal lines always get the same id
+        // (this also works for invalid UTF-8).
         Map<Line, Integer> ids = new HashMap<>(2 * (linesA.size() + linesB.size()));
         int[] idsA = toIds(linesA, ids);
         int[] idsB = toIds(linesB, ids);
 
-        // Step 2: which ids appear in A, and which in B?
+        // Step 2. A line that is not in the other file at all can never be kept, so it
+        // must be deleted (or inserted) in every answer. We mark it right away and leave
+        // it out of the Myers search.
+        // This does not change the result: such a line can never be part of a common
+        // subsequence, so the diff stays minimal. It only makes the search smaller
+        // (very different files become fast).
         // inA[id] = true means this line appears somewhere in A (same idea for inB).
         boolean[] inA = new boolean[ids.size()];
         boolean[] inB = new boolean[ids.size()];
@@ -170,8 +171,8 @@ public class Main {
             b[t] = idsB[positionB[t]];
         }
 
-        // Step 3: run Myers on the shorter lists, then copy each flag back
-        // to the line's real position in the file (using positionA / positionB).
+        // Step 3. Run Myers on the shorter lists, then copy each flag back to the line's
+        // real position in the file (using positionA / positionB).
         boolean[] smallDeleted = new boolean[countA];
         boolean[] smallInserted = new boolean[countB];
         Myers.diff(a, b, smallDeleted, smallInserted);
@@ -187,10 +188,9 @@ public class Main {
         }
     }
 
-    /**
-     * Turn every line into a number. Equal lines get the same number.
-     * Example: lines [x, y, x] -> ids [0, 1, 0]
-     */
+    // toIds turns every line into a number. Equal lines get the same number.
+    // Example: lines [x, y, x] -> ids [0, 1, 0]
+    // The HashMap remembers which number each line already has.
     private static int[] toIds(List<Line> lines, Map<Line, Integer> ids) {
         int[] result = new int[lines.size()];
         for (int i = 0; i < lines.size(); i++) {
@@ -205,12 +205,11 @@ public class Main {
         return result;
     }
 
-    /**
-     * Print the edit script. We walk through A (index i) and B (index j) together:
-     * first all deleted lines, then all inserted lines, then one kept line.
-     * Because deletions are always printed before insertions, every change block
-     * follows the delete-first rule automatically.
-     */
+    // printLines prints the edit script by walking through A (index i) and B (index j)
+    // together: first all deleted lines, then all inserted lines, then one kept line.
+    // This is how the delete-first rule is followed: between two kept lines, every '-'
+    // line is printed before any '+' line, so a '-' can never come after a '+' inside
+    // a change block.
     static void printLines(List<Line> linesA, List<Line> linesB,
                            boolean[] deleted, boolean[] inserted, OutputStream out) throws IOException {
         int i = 0;   // current line in A
@@ -235,7 +234,7 @@ public class Main {
         }
     }
 
-    /** One output line: prefix character, the line's exact bytes, then '\n'. */
+    // One output line: the prefix (' ', '-' or '+'), the line's exact bytes, then '\n'.
     static void writeLine(OutputStream out, char prefix, Line line) throws IOException {
         out.write(prefix);
         line.writeTo(out);
@@ -246,11 +245,11 @@ public class Main {
     // Part B: highlight
     // =====================================================================
 
-    /**
-     * Same walk as printLines, but we collect each change block first.
-     * In a block, the 1st '-' line is paired with the 1st '+' line, the 2nd with
-     * the 2nd, and so on. After each paired '+' line we print the "?" line.
-     */
+    // printHighlight does the same walk as printLines, but it first collects each change
+    // block (its '-' lines and its '+' lines). Then it prints them and adds a "?" line
+    // after each paired '+' line.
+    // Pairing follows the rules: the 1st '-' with the 1st '+', the 2nd with the 2nd, and
+    // so on. Lines left over have no partner and get no "?" line.
     static void printHighlight(List<Line> linesA, List<Line> linesB,
                                boolean[] deleted, boolean[] inserted, OutputStream out) throws IOException {
         int i = 0;
@@ -291,14 +290,14 @@ public class Main {
         }
     }
 
-    /**
-     * Build "? <old ranges> | <new ranges>\n" for one line pair.
-     * We run Myers again, this time on the characters (Unicode code points).
-     * The changed characters are exactly the true flags, so the ranges are
-     * just the runs of true values.
-     */
+    // rangeLine builds "? <old ranges> | <new ranges>\n" for one line pair, by running the
+    // same Myers algorithm again, this time on the characters of the two lines.
+    // The changed characters are exactly the true flags.
+    // codePoints() is used because an emoji is two Java chars, but the rules count it as
+    // ONE character. codePoints() gives one int per real character ('\r' also counts as one).
+    // The result is minimal because Myers gives the fewest deleted + inserted characters,
+    // and the characters that are not flagged are the same in both lines.
     static String rangeLine(Line oldLine, Line newLine) {
-        // codePoints() so that an emoji counts as one character (not two Java chars)
         int[] a = oldLine.toText().codePoints().toArray();
         int[] b = newLine.toText().codePoints().toArray();
         boolean[] deletedChars = new boolean[a.length];    // true = this character was removed
@@ -307,12 +306,10 @@ public class Main {
         return "? " + ranges(deletedChars) + " | " + ranges(insertedChars) + "\n";
     }
 
-    /**
-     * Turn flags into ranges.
-     * Example: flags  F T T F F T  ->  "1-3,5-6"   (end is not included)
-     * No changed characters -> "."
-     * A run of true values becomes ONE range, so touching ranges are merged automatically.
-     */
+    // ranges turns flags into ranges. Each run of true values becomes one "start-end"
+    // (end is not included). Example: F T T F F T -> "1-3,5-6". No true -> "."
+    // Each run becomes one range, so touching changes are merged into one range
+    // automatically (3-7, not 3-5,5-7).
     static String ranges(boolean[] changed) {
         StringBuilder sb = new StringBuilder();
         int i = 0;
